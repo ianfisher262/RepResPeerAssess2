@@ -1,0 +1,382 @@
+#Reproducible Research Peer Assignment 1
+#Analysis of Health and Economic Impact of Storm Events in USA Since 1950
+##Synopsis
+Using publicly available data from the US National Weather Service, an analysis was performed to investigate the impact of different types of weather events on public health and economic cost. The analysis was programmatically using the R software package and focussed primarily on identifying the most impactful events from both a health and cost perspective. 
+
+No evidence was found that the data supplied by the US National Weather Service on the cost of weather events on property or crop damage were adjusted for inflation, therefore it was assumed it did not. As a result, these costs were appropriately adjusted using data on the Consumer Price Index (CPI) supplied by the Federal Reserve Bank of St. Louis, MO. Also, to aid in answering the question of which events were most impactful on health overall, a 'health index' was created which accounted for the greater impact of fatalities compared to injuries (injuries were considered to be 20% as impactful as deaths).
+
+Further normalization of the data was necessary to appropriately categorize weather events as reported in the National Weather Service database in a manner suitable for reporting e.g. events reported separately in the raw data as "flooding" and "heavy flood" were consolidated into the category of "flood".
+
+After the data was normalized and adjusted, visual summaries were created to display the most impactful weather events by health and cost in terms of total cumulative impact since 1950. To account for the possibility that a small number of rare but hugely impactful events produced a biased view, the median yearly impact of each event type was also analyzed and reported.
+
+In summary, Tornados were found to be the most impactful weather event in the USA since 1950 on both health (Injuries, Fatalties and Health index respectively), while they were also the most costly in terms of cumulative cost. However, in terms of median yearly on the economy over the same time period, Floods were found to be the most impactful event.
+
+##Data Processing
+This section will outline how the data required for the analysis was obtained, transformed and analyzed to answer the key questions of:
+1 - Across the United States, which types of events (as indicated in the EVTYPE variable) are most harmful with respect to population health?
+
+2 - Across the United States, which types of events have the greatest economic consequences?
+
+Firstly, the data was sourced from the the Reproducible Research Coursera website in a bz2 compressed file, downloaded and read in using read.csv.
+```{r,cache = TRUE}
+fileurl<-"http://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2?accessType=DOWNLOAD"
+
+download.file(fileurl,destfile="./stormdata.csv.bz2",mode="wb")
+
+stormdata<-read.csv("./stormdata.csv.bz2")
+```
+
+The plyr and dplyr packages were loaded in preparation for various data transformations, including firstly subsetting the raw data to include only the variables pertinent to the analysis to be performed.
+```{r}
+#take only the variables we need to work with
+library(plyr)
+library(dplyr)
+stormsub<-select(stormdata,BGN_DATE,EVTYPE,FATALITIES,INJURIES,PROPDMG,PROPDMGEXP,CROPDMG,CROPDMGEXP)
+
+#remove large dataset so as to not clog memory
+rm(stormdata)
+```
+
+Upon initial inspection of the data, it was apparent that the data regarding property and crop damage costs had supporing variable that indicated the order of magnitude of the reported cost e.g. PROPDMG=250 and PROPDMGEXP=K indicated a cost of property damage of $250,000. After investigating the available values of the PROPDMGEXP variable, some values were ambiguous in the effect they were intended to have on the PROPDMG value e.g. +,- and ?. Online searching uncovered [a previous analysis of this issue] (https://rstudio-pubs-static.s3.amazonaws.com/58957_37b6723ee52b455990e149edde45e5b6.html) which was used to succesfully transform the raw cost data into a meaningful value.
+
+```{r}
+#check available values of propdmexp
+unique(stormsub$PROPDMGEXP)
+
+#check available values for cropdmexp
+unique(stormsub$CROPDMGEXP)
+
+#use analysis from here to understand exp for property damage
+#https://rstudio-pubs-static.s3.amazonaws.com/58957_37b6723ee52b455990e149edde45e5b6.html
+
+#H,h = hundreds = 100
+#K,k = kilos = thousands = 1,000
+#M,m = millions = 1,000,000
+#B,b = billions = 1,000,000,000
+#(+) = 1
+#(-) = 0
+#(?) = 0
+#black/empty character = 0
+#numeric 0..8 = 10
+```
+
+Using the assignations shown above, the ifelse function was employed to create variables for property, crop and overall damage costs.
+```{r}
+#do for property damage
+stormsub$propdm1<-ifelse(stormsub$PROPDMGEXP %in% c("h","H"),stormsub$PROPDMG*100,
+                         ifelse(stormsub$PROPDMGEXP %in% c("k","K"),stormsub$PROPDMG*1000,
+                                ifelse(stormsub$PROPDMGEXP %in% c("m","M"),stormsub$PROPDMG*1000000,
+                                       ifelse(stormsub$PROPDMGEXP %in% c("b","b"),stormsub$PROPDMG*1000000000,
+                                              ifelse(stormsub$PROPDMGEXP %in% c("-","","0","?"),0,
+                                                     ifelse(stormsub$PROPDMGEXP=="+",stormsub$PROPDMG,
+                                                            stormsub$PROPDMG*10))))))
+
+
+stormsub$cropdm1<-ifelse(stormsub$CROPDMGEXP %in% c("h","H"),stormsub$CROPDMG*100,
+                         ifelse(stormsub$CROPDMGEXP %in% c("k","K"),stormsub$CROPDMG*1000,
+                                ifelse(stormsub$CROPDMGEXP %in% c("m","M"),stormsub$CROPDMG*1000000,
+                                       ifelse(stormsub$CROPDMGEXP %in% c("b","b"),stormsub$CROPDMG*1000000000,
+                                              ifelse(stormsub$CROPDMGEXP %in% c("-","","0","?"),0,
+                                                     ifelse(stormsub$CROPDMGEXP=="+",stormsub$CROPDMG,
+                                                            stormsub$CROPDMG*10))))))
+
+#calculate total cost
+stormsub$cost<-stormsub$propdm1+stormsub$cropdm1
+```
+
+In preparation for analyzing the impact on overall health of weather events, it was determined that fatalities and injuries should not be equally weighted. It was determined that injuries should only account for 20% of the impact of a fatality. This is, of course, a subjective assessment which may not appropraietly account for the spectrum of injury severity experienced by victims of sever weather events.
+```{r}
+#create health index, weighting deaths as 5 time more impactful than injuries
+stormsub$hind<-stormsub$FATALITIES+(stormsub$INJURIES*0.2)
+```
+
+The start dates on weather events exist in the raw data in the datetime format of M/D/YYYY HH:MM:SS and held as factors. In order to evaluate data by year, the factors were converted to dates using as.Date then then POSIXlt function was applied to enable extraction of the year (before adding 1900 to this value to account for provision of the year as years since 1900).
+```{r}
+#as times are all zero in the date field, can convert to date class without worrying about times
+stormsub$evdate<-as.POSIXlt(as.Date(stormsub$BGN_DATE,format="%m/%d/%Y"))
+
+#get year from dates
+stormsub$evyr<-stormsub$evdate$year+1900
+```
+
+Further examination of the raw data showed that the individual weather event types had been collected and stored in without a controlled terminology and were in many cases essentially free text values. In order to facilitate analysis by group, the raw data was first converted to lower case, before applying the grepl function within the ifelse function to create standard classes of weather event type.
+
+```{r}
+#convert evtype to the same case to see if that normalizes data
+stormsub$evtypel<-tolower(stormsub$EVTYPE)
+
+#create new event type variable to consolidate some of the categories
+attach(stormsub)
+stormsub$evnew<-ifelse(grepl("hail",evtypel),"Hail",
+                ifelse(grepl("flash flood",evtypel),"Flash flood",
+                ifelse(grepl("flood",evtypel)|grepl("fld",evtypel),"Flood",
+                ifelse(grepl("thunder",evtypel)|grepl("tstm",evtypel),"Thunderstorm",
+                ifelse(grepl("snow",evtypel)|grepl("blizzard",evtypel),"Snow",
+                ifelse(grepl("tornado",evtypel),"Tornado",       
+                ifelse(grepl("hurricane",evtypel),"Hurricane",
+                ifelse(grepl("typhoon",evtypel),"Typhoon",  
+                ifelse(grepl("wind",evtypel),"Wind",
+                ifelse(grepl("freezing rain",evtypel),"Freezing rain",
+                ifelse(grepl("freezing fog",evtypel),"Freezing fog",
+                ifelse(grepl("cold",evtypel)|grepl("freez",evtypel)
+                       |grepl("frost",evtypel)|grepl("chill",evtypel)
+                       |grepl("low temp",evtypel),"Extreme cold",
+                ifelse(grepl("heat",evtypel)|grepl("warm",evtypel)|grepl("high temp",evtypel),"Extreme heat",
+                ifelse(grepl("drought",evtypel)|grepl("dry",evtypel),"Drought",
+                ifelse(grepl("tidal",evtypel)|grepl("tide",evtypel),"Tidal event",
+                ifelse(grepl("surge",evtypel),"Storm surge",
+                ifelse(grepl("fog",evtypel),"fog",
+                ifelse(grepl("funnel",evtypel),"Funnel cloud",
+                ifelse(grepl("microb",evtypel),"Microburst",
+                ifelse(grepl("lightn",evtypel),"Lightning",
+                ifelse(grepl("fire",evtypel),"Fire",
+                ifelse(grepl("tropical s",evtypel)|grepl("tropical d",evtypel),"Tropical storm",
+                ifelse(grepl("dust",evtypel),"Dust storm",
+                ifelse(grepl("avalanche",evtypel),"Avalanche",      
+                ifelse(grepl("seiche",evtypel),"Seiche", 
+                ifelse(grepl("rain",evtypel),"Rain", 
+                ifelse(grepl("winter",evtypel)|grepl("wintry",evtypel),"Winter weather", 
+                ifelse(grepl("erosion",evtypel),"Erosion",
+                ifelse(grepl("?",evtypel),"Unknown",       
+                ifelse(grepl("sleet",evtypel),"sleet",evtypel
+                       ))))))))))))))))))))))))))))))
+detach(stormsub)
+
+#make new variable a factor to better suit groupings
+stormsub$evnew<-as.factor(stormsub$evnew)
+```
+
+After investigating the US National Weather Service documention for their data, no evidence was found that the cost of property and cost damage data had been adjusted for inflation. Without adjustment, the true impact of events from previous decades could be significantly underestimated. For example [$1 in 1950 would be worth $9.87 in 2015] (http://www.usinflationcalculator.com/). The most often used measure for the costs of inlfation over time is the Consumer Price Index (CPI), data on which the US Labor Bureau supplies data in PDF format. The most workable dataset found regarding CPI over time (provided by month since 1st January 1947) was obtained from the [St. Louis Federal Bank] (https://research.stlouisfed.org/fred2/series/CPIAUCSL). Unfortunately, the data could not be automatically scraped from their website, although the data was downloaded as a .csv file and read in using read.csv.
+```{r}
+#calculate cost per event over time - but need to adjust costs for inflation over time
+#retrieve data from https://research.stlouisfed.org/fred2/series/CPIAUCSL# (cannot scrape directly)
+cpi<-read.csv("u:/CPIAUCSL.csv",skip=53)
+```
+
+This CPI data was then transformed using as.Date and POSIXlt to obtain the year values from the supplied dates, before using the ddply function to summarize the mean CPI value per year.
+```{r}
+#get average cpi values by year
+cpi$daten<-as.POSIXlt(as.Date(cpi$DATE,format="%Y-%M-%d"))
+cpi$cpiyr<-cpi$daten$year+1900
+cpisum<-ddply(cpi[,c("VALUE","cpiyr")],"cpiyr",summarize,meancpi=mean(VALUE))
+```
+
+In order to transform the reported property and crop damage figures, the ratio of CPI between 2015 and the year of reporting had to be calcuated. Therefore the CPI value for 2015 was extracted a vector of length 1, before creating a multiplication factor variable for each year in the CPI data by dividing the 2015 value by the mean CPI value for that year i.e. 2015 would have a multiplication factor of 1, while all other years would have a value of >1 which would account for the inflation between that year and 2015.
+```{r}
+#get 2015 number
+cpi2015<-cpisum[which(cpisum$cpiyr==2015),2]
+cpisum$cpimult<-cpi2015/cpisum$meancpi
+cpisum<-rename(cpisum,c("cpiyr"="evyr"))
+```
+
+The CPI data was then merged onto the weather event data and cost variables created which contained damage costs adjusted for inflation.
+```{r}
+#merge to storm data to give a true representation of cost in 2015 dollars
+stormsub<-merge(stormsub,cpisum,by="evyr")
+
+#create adjusted costs (property, crops and total)
+stormsub$adjcost<-stormsub$cost*stormsub$cpimult
+stormsub$adjprop<-stormsub$propdm1*stormsub$cpimult
+stormsub$adjcrop<-stormsub$cropdm1*stormsub$cpimult
+```
+
+Using ddply, the total cumulative impact on health and the ecomony was calculated. For ease of viewing in outputs, the cost data was converted to billions of dollars.
+```{r}
+#calculate total costs and impacts on health of event types
+evimp<-ddply(stormsub[,c("evnew","hind","adjcost","adjprop","adjcrop","FATALITIES","INJURIES")],
+             "evnew",
+             summarize,
+             totfat=sum(FATALITIES),
+             totinj=sum(INJURIES),
+             tothimp=sum(hind),
+             totcost=round(sum(adjcost/1000000000),1),#show costs in billions of dollars
+             propcost=round(sum(adjprop/1000000000),1),
+             cropcost=round(sum(adjcrop/1000000000),1)
+)
+```
+
+To investigate if a small number of rare but very impactful events provided a biased view of what were the most commonly impactful events, the median yearly impact was calculated.
+```{r}
+#also look at the data by year to see if the totals are being influenced by unique events
+evimpyr<-ddply(stormsub[,c("evyr","evnew","hind","adjcost","adjprop","adjcrop","FATALITIES","INJURIES")],
+               c("evyr","evnew"),
+               summarize,
+               totfat=sum(FATALITIES),
+               totinj=sum(INJURIES),
+               tothimp=sum(hind),
+               totcost=round(sum(adjcost/1000000),1),#show costs in millions of dollars
+               propcost=round(sum(adjprop/1000000),1),
+               cropcost=round(sum(adjcrop/1000000),1)
+)
+
+#now calculate median yearly values for events
+medev<-ddply(evimpyr,
+             "evnew",
+             summarize,
+             medcost=median(totcost),
+             medprop=median(propcost),
+             medcrop=median(cropcost),
+             medhind=median(tothimp),
+             medfat=median(totfat),
+             medinj=median(totinj)
+)
+```
+
+In preparation for reporting results, individual datasets were created which contained the 3 most impactful weather event types per category. To enable preferred order of outputs, the weather event types were converted to factors.
+```{r}
+#sort so I only get top three values
+#costs first
+#worst for crops
+crop3bad<-arrange(evimp,-cropcost)
+crop3bad<-crop3bad[1:3,]
+crop3bad$evnew<-factor(crop3bad$evnew,as.character(crop3bad$evnew))
+
+#worst for property
+prop3bad<-arrange(evimp,-propcost)
+prop3bad<-prop3bad[1:3,]
+prop3bad$evnew<-factor(prop3bad$evnew,as.character(prop3bad$evnew))
+
+
+#worst overall
+all3bad<-arrange(evimp,-totcost)
+all3bad<-all3bad[1:3,]
+all3bad$evnew<-factor(all3bad$evnew,as.character(all3bad$evnew))
+
+#now health
+#worst for fatalities
+fat3bad<-arrange(evimp,-totfat)
+fat3bad<-fat3bad[1:3,]
+fat3bad$evnew<-factor(fat3bad$evnew,as.character(fat3bad$evnew))
+
+#worst for injuries
+inj3bad<-arrange(evimp,-totinj)
+inj3bad<-inj3bad[1:3,]
+inj3bad$evnew<-factor(inj3bad$evnew,as.character(inj3bad$evnew))
+
+#worst for health overall
+himp3bad<-arrange(evimp,-tothimp)
+himp3bad<-himp3bad[1:3,]
+himp3bad$evnew<-factor(himp3bad$evnew,as.character(himp3bad$evnew))
+```
+
+##Results
+The 3 weather event types having the most impact on crop damage cost, property damage cost and overall cost since 1950 were displayed in bar charts using qplot. The gridExtra package was used to created a multi-panel figure.
+```{r}
+#plot for costs
+
+install.packages("gridExtra", repos="http://cran.rstudio.com/")
+library(gridExtra)
+library(ggplot2)
+
+
+plot1<-qplot(data=crop3bad,
+      x=factor(evnew),
+      y=cropcost,
+      main="Bar chart of the most costly weather event types since 1950\nby damage type in billions of US dollars",
+      geom="bar",
+      stat="identity",
+      fill=evnew,
+      ylab="Crop damage") + 
+  theme(legend.position="none") + 
+  theme(axis.title.x = element_blank())
+
+plot2<-qplot(data=prop3bad,
+      x=factor(evnew),
+      y=propcost,
+      geom="bar",
+      stat="identity",
+      fill=evnew,
+      ylab="Property damage") + 
+  theme(legend.position="none") + 
+  theme(axis.title.x = element_blank())
+
+plot3<-qplot(data=all3bad,
+      x=factor(evnew),
+      y=totcost,
+      geom="bar",
+      stat="identity",
+      fill=evnew,
+      ylab="All damage") + 
+  theme(legend.position="none") +
+  theme(axis.title.x = element_blank())
+
+grid1<-grid.arrange(plot1,plot2,plot3, nrow=3, ncol=1)
+```
+
+The 3 weather event types having the most impact on fatalities, injuries and overall health as reported by health index (described above) since 1950 were displayed in bar charts using qplot. The gridExtra package was used to created a multi-panel figure.
+```{r}
+#plot for health
+
+plot4<-qplot(data=fat3bad,
+             x=factor(evnew),
+             y=totfat,
+             main="Bar chart of the most impactful weather events on health\nin US since 1950",
+             geom="bar",
+             stat="identity",
+             fill=evnew,
+             ylab="Fatalities") + 
+  theme(legend.position="none") + 
+  theme(axis.title.x = element_blank())
+
+plot5<-qplot(data=inj3bad,
+             x=factor(evnew),
+             y=totinj,
+             geom="bar",
+             stat="identity",
+             fill=evnew,
+             ylab="Injuries") + 
+  theme(legend.position="none") + 
+  theme(axis.title.x = element_blank())
+
+plot6<-qplot(data=himp3bad,
+             x=factor(evnew),
+             y=tothimp,
+             geom="bar",
+             stat="identity",
+             fill=evnew,
+             ylab="Total health impact") + 
+  theme(legend.position="none") +
+  theme(axis.title.x = element_blank())
+
+grid2<-grid.arrange(plot4,plot5,plot6, nrow=3, ncol=1)
+```
+
+Median yearly impact on health and the economy were also charted using qplot.
+```{r}
+#plot of overall health and economic impact taking median of yearly impacts into account
+
+#worst for median health
+medh3bad<-arrange(medev,-medhind)
+medh3bad<-medh3bad[1:3,]
+medh3bad$evnew<-factor(medh3bad$evnew,as.character(medh3bad$evnew))
+
+#worst for median cost
+medc3bad<-arrange(medev,-medcost)
+medc3bad<-medc3bad[1:3,]
+medc3bad$evnew<-factor(medc3bad$evnew,as.character(medc3bad$evnew))
+
+plot7<-qplot(data=medh3bad,
+             x=factor(evnew),
+             y=medhind,
+             main="Bar chart of the most impactful weather events on health and economy\nin US since 1950",
+             geom="bar",
+             stat="identity",
+             fill=evnew,
+             ylab="Health index") + 
+  theme(legend.position="none") + 
+  theme(axis.title.x = element_blank())
+
+plot8<-qplot(data=medc3bad,
+             x=factor(evnew),
+             y=medcost,
+             geom="bar",
+             stat="identity",
+             fill=evnew,
+             ylab="Cost ($Bn)") + 
+  theme(legend.position="none") +
+  theme(axis.title.x = element_blank())
+
+grid3<-grid.arrange(plot7,plot8,nrow=2, ncol=1)
+```
+
+In summary, Tornados were found to be the most impactful weather event in the USA since 1950 on both health (Injuries, Fatalties and Health index respectively), while they were also the most costly in terms of cumulative cost. However, in terms of median yearly on the ecomony over the same time period, Floods were found to be the most impactful event.

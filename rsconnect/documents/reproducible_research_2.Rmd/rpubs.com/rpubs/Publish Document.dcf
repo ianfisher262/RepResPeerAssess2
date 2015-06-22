@@ -1,0 +1,7 @@
+name: Publish Document
+account: rpubs
+server: rpubs.com
+bundleId:
+        https://api.rpubs.com/api/v1/document/89091/a7cd5cf46e37486682284ca2ed808a8f
+url: http://rpubs.com/ianfisher262/89091
+when: 1434925991.78744
